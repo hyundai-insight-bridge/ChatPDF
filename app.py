@@ -37,7 +37,10 @@ def build_db(pdf_path, openai_key):
     if pdf_path is None:
         return None, ""
 
-    pages = PyPDFLoader(pdf_path).load_and_split()
+    pages = list()
+
+    for path in pdf_path:
+        pages.extend(PyPDFLoader(path).load_and_split())
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
@@ -151,11 +154,7 @@ with gr.Blocks(title="ChatPDF") as demo:
     with gr.Column(visible=False) as step2_page:
         with gr.Sidebar():
             gr.Markdown("### ⚙️ 설정 및 파일 관리")
-            pdf_file = gr.File(
-                label="PDF 파일을 올려주세요!", 
-                file_types=[".pdf"], 
-                type="filepath"
-            )
+            pdf_files = gr.File(label="PDF 파일을 올려주세요!", file_count="multiple", file_types=[".pdf"], type="filepath")
             status = gr.Markdown()
             db_state = gr.State()
             
@@ -190,18 +189,19 @@ with gr.Blocks(title="ChatPDF") as demo:
         outputs=[key_status, step1_page, step2_page]
     )
 
-    # 3. PDF 업로드 및 DB 처리
-    pdf_file.upload(build_db, inputs=[pdf_file, openai_key], outputs=[db_state, status])
-
-    # [이슈 #14 작업] 4. 질문하기 클릭 및 엔터 제출 시 대화 생성
+    pdf_files.upload(build_db, inputs=[pdf_files, openai_key], outputs=[db_state, status])
+    
+    # [이슈 #14 작업] 버튼 클릭 시 입력값 초기화 및 대화 기록(chatbot) 상태 갱신
     ask_btn.click(
-        answer,
-        inputs=[question, openai_key, db_state, chatbot],
+        answer, 
+        inputs=[question, openai_key, db_state, chatbot], 
         outputs=[question, chatbot]
     )
+    
+    # [이슈 #14 작업] 엔터키 제출 시 입력값 초기화 및 대화 기록(chatbot) 상태 갱신
     question.submit(
-        answer,
-        inputs=[question, openai_key, db_state, chatbot],
+        answer, 
+        inputs=[question, openai_key, db_state, chatbot], 
         outputs=[question, chatbot]
     )
 
