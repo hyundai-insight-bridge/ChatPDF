@@ -267,8 +267,9 @@ def run_baseline(csv_path, openai_key, db, progress=gr.Progress()):
         ref = str(r[answer_col])
         try:
             prediction = ""
-            for out in answer(q, openai_key, db):   # 기존 answer() 그대로 사용 (마지막 yield가 최종 답변)
-                prediction = out
+            # 기존 answer()는 ("", history)를 yield → 마지막 history의 어시스턴트 메시지가 최종 답변
+            for _, history in answer(q, openai_key, db, []):
+                prediction = history[-1]["content"]
         except Exception as e:
             prediction = f"[ERROR] {e}"
  
@@ -310,7 +311,7 @@ def run_baseline(csv_path, openai_key, db, progress=gr.Progress()):
     return summary, result, out_path
  
  
-with demo:
+with demo, step2_page:   # Step 2(메인) 화면 안에 붙여서, API 키 검증 전에는 보이지 않게 함
     gr.Markdown("---\n## 📊 Baseline 측정")
     eval_csv = gr.File(label="평가 질문 CSV (evaluation_questions.csv)", file_types=[".csv"], type="filepath")
     eval_btn = gr.Button("Baseline 측정 시작")
