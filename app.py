@@ -8,7 +8,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import Chroma
 from langchain_classic.retrievers.multi_query import MultiQueryRetriever
-from langchain_classic import hub
+# from langchain_classic import hub
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -25,6 +25,11 @@ def build_db(pdf_path, openai_key):
     pages = PyPDFLoader(pdf_path).load_and_split()
 
     text_splitter = RecursiveCharacterTextSplitter(
+        # 사이즈 밑 오버랩 테스트 케이스
+        # [(chunk_size, chunk_overlap)]
+        # [(200, 10), (200, 25), (200, 50),
+        # (300, 25), (300, 50), (300, 80),
+        # (400, 25), (400, 50), (400, 80), (400, 100)]
         chunk_size=300, chunk_overlap=25,
         length_function=len, is_separator_regex=False,
     )
@@ -37,13 +42,22 @@ def build_db(pdf_path, openai_key):
     db = Chroma.from_documents(
         texts, embeddings_model, collection_name=f"pdf_{uuid.uuid4().hex}"
     )
-    return db, f"✅ 처리 완료:{len(pages)}페이지 →{len(texts)}개 청크"
 
-def answer(question, openai_key, db):
-    if db is None:
+    # ★ text_splitter에 실제로 들어간 값을 읽어 오기
+    chunk_info = (
+        f"📏 chunk_size: **{text_splitter._chunk_size}** / "
+        f"chunk_overlap: **{text_splitter._chunk_overlap}**"
+    )
+
+    return (db, chunk_info), f"✅ 처리 완료:{len(pages)}페이지 →{len(texts)}개 청크"
+
+def answer(question, openai_key, db_state):
+    if db_state is None:
         raise gr.Error("먼저 API 키를 입력하고 PDF를 업로드하세요.")
     if not question:
         raise gr.Error("질문을 입력하세요.")
+
+    db, chunk_info = db_state
 
     llm = ChatOpenAI(temperature=0, openai_api_key=openai_key)
     retriever_from_llm = MultiQueryRetriever.from_llm(
@@ -79,6 +93,9 @@ def answer(question, openai_key, db):
     for chunk in rag_chain.stream(question):
         text += chunk
         yield text
+
+    text += f"\n\n---\n{chunk_info}"                      # ★ 답변 끝에 설정값 붙이기
+    yield text
 
 with gr.Blocks(title="ChatPDF") as demo:
     gr.Markdown("# ChatPDF\n---")
