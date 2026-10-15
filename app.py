@@ -205,5 +205,124 @@ with gr.Blocks(title="ChatPDF") as demo:
         outputs=[question, chatbot]
     )
 
+# =====================================================================
+# [추가] Baseline 측정 — evaluation_questions.csv를 불러와 기존 answer()로 답변 후 채점
+#   - 기존 build_db / answer 함수를 그대로 호출하므로 현재 파이프라인의 성능이 그대로 측정됩니다.
+#   - 위에서 업로드한 PDF로 만든 DB(db_state)를 그대로 사용합니다.
+# =====================================================================
+import tempfile
+import pandas as pd
+from pydantic import BaseModel, Field
+ 
+ 
+class EvalGrade(BaseModel):
+    correct: bool = Field(description="모델 답변이 정답과 의미상 일치하면 True, 아니면 False")
+    reason: str = Field(description="판정 근거 (한 문장)")
+ 
+ 
+EVAL_GRADE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "당신은 RAG 시스템의 답변을 채점하는 평가자입니다.\n"
+     "[질문], [정답], [모델 답변]을 보고 모델 답변이 정답과 의미상 일치하는지 판정하세요.\n"
+     "- 표현이나 언어(한국어/영어)가 달라도 핵심 내용이 같으면 정답입니다.\n"
+     "- 정답이 '확인할 수 없다/알 수 없다'인 경우, 모델이 모른다(I don't know 등) 또는 "
+     "문서에서 확인되지 않는다고 답하면 정답이고, 구체적인 값을 추측해 단정하면 오답입니다.\n"
+     "- 정답과 다른 사실을 단정하거나 핵심 내용이 빠지면 오답입니다."),
+    ("human", "[질문]\n{question}\n\n[정답]\n{reference}\n\n[모델 답변]\n{prediction}"),
+])
+ 
+ 
+def eval_question_type(reason):
+    """reason 컬럼 앞부분으로 질문 유형 분류 (문서 기반 / 표현 변경 / 문서 외)."""
+    for t in ("문서 기반", "표현 변경", "문서 외"):
+        if str(reason).strip().startswith(t):
+            return t
+    return "기타"
+ 
+ 
+def run_baseline(csv_path, openai_key, db, progress=gr.Progress()):
+    if not openai_key:
+        raise gr.Error("OpenAI API 키를 먼저 입력하세요.")
+    if csv_path is None:
+        raise gr.Error("평가 질문 CSV 파일을 올려주세요.")
+    if db is None:
+        raise gr.Error("먼저 위에서 PDF를 업로드해 DB를 만들어주세요.")
+ 
+    # 1) CSV 불러오기 (BOM 대응, 'anwser' 오타 컬럼 대응)
+    df = pd.read_csv(csv_path, encoding="utf-8-sig").dropna(subset=["question"])
+    answer_col = "answer" if "answer" in df.columns else "anwser"
+    df = df.reset_index(drop=True)
+ 
+    # 2) 질문별로 기존 answer() 실행 → 채점
+    judge = ChatOpenAI(
+        model="gpt-4o-mini", temperature=0, openai_api_key=openai_key
+    ).with_structured_output(EvalGrade)
+    grader = EVAL_GRADE_PROMPT | judge
+ 
+    rows = []
+    n = len(df)
+    for i, r in df.iterrows():
+        progress((i, n), desc=f"질문 {i + 1}/{n} 평가 중...")
+        q = str(r["question"])
+        ref = str(r[answer_col])
+        try:
+            prediction = ""
+            for out in answer(q, openai_key, db):   # 기존 answer() 그대로 사용 (마지막 yield가 최종 답변)
+                prediction = out
+        except Exception as e:
+            prediction = f"[ERROR] {e}"
+ 
+        try:
+            g = grader.invoke({"question": q, "reference": ref, "prediction": prediction})
+            correct, judge_reason = bool(g.correct), g.reason
+        except Exception as e:
+            correct, judge_reason = False, f"[채점 실패] {e}"
+ 
+        rows.append({
+            "no": i + 1,
+            "type": eval_question_type(r.get("reason", "")),
+            "question": q,
+            "reference": ref,
+            "prediction": prediction,
+            "correct": correct,
+            "judge_reason": judge_reason,
+            "evidence_page": r.get("evidence_page", ""),
+        })
+ 
+    result = pd.DataFrame(rows)
+ 
+    # 3) 요약 (전체 + 유형별 정확도)
+    total_acc = result["correct"].mean() * 100
+    by_type = result.groupby("type")["correct"].agg(["sum", "count"])
+    lines = [
+        "### 📊 Baseline 결과",
+        f"**전체 정확도: {total_acc:.1f}% ({int(result['correct'].sum())}/{len(result)})**",
+        "",
+        "| 질문 유형 | 정답 수 | 문항 수 | 정확도 |",
+        "|---|---|---|---|",
+    ]
+    for t, s in by_type.iterrows():
+        lines.append(f"| {t} | {int(s['sum'])} | {int(s['count'])} | {s['sum'] / s['count'] * 100:.1f}% |")
+    summary = "\n".join(lines)
+ 
+    out_path = os.path.join(tempfile.gettempdir(), f"baseline_result_{uuid.uuid4().hex[:8]}.csv")
+    result.to_csv(out_path, index=False, encoding="utf-8-sig")
+    return summary, result, out_path
+ 
+ 
+with demo:
+    gr.Markdown("---\n## 📊 Baseline 측정")
+    eval_csv = gr.File(label="평가 질문 CSV (evaluation_questions.csv)", file_types=[".csv"], type="filepath")
+    eval_btn = gr.Button("Baseline 측정 시작")
+    eval_summary = gr.Markdown()
+    eval_table = gr.Dataframe(label="문항별 결과", wrap=True)
+    eval_download = gr.File(label="결과 CSV 다운로드")
+ 
+    eval_btn.click(
+        run_baseline,
+        inputs=[eval_csv, openai_key, db_state],
+        outputs=[eval_summary, eval_table, eval_download],
+    )
+
 if __name__ == "__main__":
     demo.launch()
