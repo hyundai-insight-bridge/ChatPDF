@@ -22,7 +22,10 @@ def build_db(pdf_path, openai_key):
     if pdf_path is None:
         return None, ""
 
-    pages = PyPDFLoader(pdf_path).load_and_split()
+    pages = list()
+
+    for path in pdf_path:
+        pages.extend(PyPDFLoader(path).load_and_split())
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=300, chunk_overlap=25,
@@ -84,7 +87,7 @@ with gr.Blocks(title="ChatPDF") as demo:
     gr.Markdown("# ChatPDF\n---")
 
     openai_key = gr.Textbox(label="OPEN_AI_API_KEY", type="password")
-    pdf_file = gr.File(label="PDF 파일을 올려주세요!", file_types=[".pdf"], type="filepath")
+    pdf_files = gr.File(label="PDF 파일을 올려주세요!", file_count="multiple", file_types=[".pdf"], type="filepath")
     status = gr.Markdown()
     db_state = gr.State()
 
@@ -95,7 +98,7 @@ with gr.Blocks(title="ChatPDF") as demo:
 
     gr.Markdown("[☕ Buy me a coffee](https://www.buymeacoffee.com/{계정 ID})")
 
-    pdf_file.upload(build_db, inputs=[pdf_file, openai_key], outputs=[db_state, status])
+    pdf_files.upload(build_db, inputs=[pdf_files, openai_key], outputs=[db_state, status])
     ask_btn.click(answer, inputs=[question, openai_key, db_state], outputs=output)
     question.submit(answer, inputs=[question, openai_key, db_state], outputs=output)
 
